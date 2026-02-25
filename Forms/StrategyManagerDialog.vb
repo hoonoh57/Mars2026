@@ -1,5 +1,6 @@
 ﻿' ===== Forms/StrategyManagerDialog.vb =====
 ' 전략 CRUD 다이얼로그
+' BASE 전략 보호 + CHG1M/CHG3M/Volume 지원
 
 Public Class StrategyManagerDialog
     Inherits Form
@@ -24,16 +25,18 @@ Public Class StrategyManagerDialog
     Private strategies As List(Of TradingStrategy)
     Private currentStrategy As TradingStrategy
 
-    ' 사용 가능한 지표/연산자 목록
-    Private ReadOnly IndicatorList() As String = {"Close", "MA5", "MA20", "MA120",
-        "RSI14", "RSI5", "RSI50", "JMA", "SuperTrend", "STDir", "TickIntensity", "High", "Low", "Volume"}
-    ' 기존 OperatorList를 교체
+    ' ★ CHG1M, CHG3M 추가
+    Private ReadOnly IndicatorList() As String = {
+        "CHG1M", "CHG3M", "Close", "Open", "High", "Low", "Volume",
+        "MA5", "MA20", "MA120",
+        "RSI14", "RSI5", "RSI50",
+        "JMA", "SuperTrend", "STDir", "TickIntensity"}
+
     Private ReadOnly OperatorList() As String = {
         ">", "<", ">=", "<=", "=",
         "CrossUp", "CrossDown",
         "TurnUp", "TurnDown",
-        "Rising", "Falling"
-    }
+        "Rising", "Falling"}
 
     Public Sub New()
         Me.Text = "전략 관리자"
@@ -113,25 +116,21 @@ Public Class StrategyManagerDialog
         pnlSellBtn.Controls.AddRange({btnAddSell, btnRemoveSell})
         pnlSell.Controls.Add(dgvSell) : pnlSell.Controls.Add(pnlSellBtn) : pnlSell.Controls.Add(lblSell)
 
-        pnlEdit.Controls.Add(pnlSell)
-        pnlEdit.Controls.Add(pnlBuy)
-        pnlEdit.Controls.Add(pnlBasic)
-
-        Me.Controls.Add(pnlEdit)
-        Me.Controls.Add(pnlList)
-
-
         ' 도움말
         Dim lblHelp As New Label() With {
             .Dock = DockStyle.Bottom, .Height = 60, .Padding = New Padding(5),
             .Font = New Font("맑은 고딕", 8), .ForeColor = Color.DimGray,
             .Text = "■ 연산자 설명:" & vbCrLf &
                     "  >, <, >=, <=, = : 비교  |  CrossUp/Down : 교차  |  TurnUp : 하락→상승 전환  |  TurnDown : 상승→하락 전환" & vbCrLf &
-                    "  Rising/Falling : N봉 연속 상승/하락 (Value에 봉수 입력)  |  JMA(1) = 1봉 전 JMA 값 참조"
-        }
+                    "  Rising/Falling : N봉 연속 상승/하락 (Value에 봉수 입력)  |  CHG1M=1분변화율  CHG3M=3분변화율  CHG1M+1=지표+오프셋"}
+
+        pnlEdit.Controls.Add(pnlSell)
+        pnlEdit.Controls.Add(pnlBuy)
+        pnlEdit.Controls.Add(pnlBasic)
         pnlEdit.Controls.Add(lblHelp)
 
-
+        Me.Controls.Add(pnlEdit)
+        Me.Controls.Add(pnlList)
     End Sub
 
     Private Sub SetupConditionGrid(dgv As DataGridView)
@@ -141,21 +140,28 @@ Public Class StrategyManagerDialog
         dgv.SelectionMode = DataGridViewSelectionMode.FullRowSelect
         dgv.Font = New Font("맑은 고딕", 9)
 
+        ' ★ DataError 무시 (항목에 없는 값이 로드될 때 오류 방지)
+        AddHandler dgv.DataError, Sub(s As Object, ev As DataGridViewDataErrorEventArgs)
+                                      ev.ThrowException = False
+                                  End Sub
+
+        ' 지표 콤보
         Dim colInd As New DataGridViewComboBoxColumn() With {
             .Name = "Indicator", .HeaderText = "지표", .Width = 130}
         For Each ind In IndicatorList : colInd.Items.Add(ind) : Next
-        ' 이전 봉 참조 추가
         For Each ind In IndicatorList
-            colInd.Items.Add(ind & "(1)")   ' 1봉 전
-            colInd.Items.Add(ind & "(2)")   ' 2봉 전
+            colInd.Items.Add(ind & "(1)")
+            colInd.Items.Add(ind & "(2)")
         Next
         dgv.Columns.Add(colInd)
 
+        ' 연산자 콤보
         Dim colOp As New DataGridViewComboBoxColumn() With {
             .Name = "Operator", .HeaderText = "연산자", .Width = 100}
         colOp.Items.AddRange(OperatorList)
         dgv.Columns.Add(colOp)
 
+        ' 대상 콤보 — ★ 오프셋 조합도 추가
         Dim colTarget As New DataGridViewComboBoxColumn() With {
             .Name = "Target", .HeaderText = "대상/지표", .Width = 130}
         colTarget.Items.Add("")
@@ -164,17 +170,30 @@ Public Class StrategyManagerDialog
             colTarget.Items.Add(ind & "(1)")
             colTarget.Items.Add(ind & "(2)")
         Next
+        ' ★ 오프셋 조합: CHG1M+1, CHG1M+2, CHG3M+1 등
+        For Each ind In {"CHG1M", "CHG3M"}
+            For Each offset In {"1", "2", "3", "5"}
+                colTarget.Items.Add(ind & "+" & offset)
+                colTarget.Items.Add(ind & "-" & offset)
+            Next
+        Next
         dgv.Columns.Add(colTarget)
 
+        ' 값
         dgv.Columns.Add(New DataGridViewTextBoxColumn() With {
             .Name = "Value", .HeaderText = "값(숫자)", .Width = 80})
     End Sub
 
-
     Private Sub LoadStrategies()
         strategies = StrategyStore.LoadAll()
         lstStrategies.Items.Clear()
-        For Each s In strategies : lstStrategies.Items.Add(s.Name) : Next
+        For Each s In strategies
+            ' BASE는 ★ 표시
+            Dim prefix = ""
+            If s.Grade = "BASE" Then prefix = "★ "
+            If s.Grade = "PROMOTED" Then prefix = "● "
+            lstStrategies.Items.Add($"{prefix}{s.Name}")
+        Next
     End Sub
 
     Private Sub LstStrategies_Selected(sender As Object, e As EventArgs)
@@ -187,17 +206,49 @@ Public Class StrategyManagerDialog
         nudMaxHold.Value = Math.Max(1, Math.Min(500, currentStrategy.MaxHoldBars))
         FillConditionGrid(dgvBuy, currentStrategy.BuyConditions)
         FillConditionGrid(dgvSell, currentStrategy.SellConditions)
+
+        ' BASE 전략은 편집 비활성화
+        Dim locked = currentStrategy.IsLocked
+        txtName.ReadOnly = locked
+        txtDesc.ReadOnly = locked
+        nudStopLoss.Enabled = Not locked
+        nudTakeProfit.Enabled = Not locked
+        nudMaxHold.Enabled = Not locked
+        btnSave.Enabled = Not locked
+        btnAddBuy.Enabled = Not locked
+        btnRemoveBuy.Enabled = Not locked
+        btnAddSell.Enabled = Not locked
+        btnRemoveSell.Enabled = Not locked
+        dgvBuy.ReadOnly = locked
+        dgvSell.ReadOnly = locked
     End Sub
 
     Private Sub FillConditionGrid(dgv As DataGridView, conditions As List(Of StrategyCondition))
         dgv.Rows.Clear()
         For Each c In conditions
             Dim idx = dgv.Rows.Add()
-            dgv.Rows(idx).Cells("Indicator").Value = c.Indicator
-            dgv.Rows(idx).Cells("Operator").Value = c.Operator
-            dgv.Rows(idx).Cells("Target").Value = If(String.IsNullOrEmpty(c.Target), "", c.Target)
-            dgv.Rows(idx).Cells("Value").Value = c.Value
+            Dim row = dgv.Rows(idx)
+
+            ' ★ 콤보에 없는 값이면 동적 추가
+            EnsureComboItem(row.Cells("Indicator"), c.Indicator)
+            EnsureComboItem(row.Cells("Operator"), c.Operator)
+            EnsureComboItem(row.Cells("Target"), If(String.IsNullOrEmpty(c.Target), "", c.Target))
+
+            row.Cells("Indicator").Value = c.Indicator
+            row.Cells("Operator").Value = c.Operator
+            row.Cells("Target").Value = If(String.IsNullOrEmpty(c.Target), "", c.Target)
+            row.Cells("Value").Value = c.Value
         Next
+    End Sub
+
+    ''' <summary>콤보 셀에 값이 없으면 동적으로 추가</summary>
+    Private Sub EnsureComboItem(cell As DataGridViewCell, value As String)
+        If String.IsNullOrEmpty(value) Then Return
+        Dim comboCell = TryCast(cell, DataGridViewComboBoxCell)
+        If comboCell Is Nothing Then Return
+        If Not comboCell.Items.Contains(value) Then
+            comboCell.Items.Add(value)
+        End If
     End Sub
 
     Private Function ReadConditions(dgv As DataGridView) As List(Of StrategyCondition)
@@ -221,11 +272,22 @@ Public Class StrategyManagerDialog
         txtName.Text = currentStrategy.Name : txtDesc.Text = ""
         nudStopLoss.Value = -3 : nudTakeProfit.Value = 10 : nudMaxHold.Value = 30
         dgvBuy.Rows.Clear() : dgvSell.Rows.Clear()
+        ' 편집 활성화
+        txtName.ReadOnly = False : txtDesc.ReadOnly = False
+        nudStopLoss.Enabled = True : nudTakeProfit.Enabled = True : nudMaxHold.Enabled = True
+        btnSave.Enabled = True
+        btnAddBuy.Enabled = True : btnRemoveBuy.Enabled = True
+        btnAddSell.Enabled = True : btnRemoveSell.Enabled = True
+        dgvBuy.ReadOnly = False : dgvSell.ReadOnly = False
     End Sub
 
     Private Sub btnSave_Click(sender As Object, e As EventArgs) Handles btnSave.Click
         If String.IsNullOrWhiteSpace(txtName.Text) Then MessageBox.Show("전략명을 입력하세요.") : Return
         If currentStrategy Is Nothing Then currentStrategy = New TradingStrategy()
+        If currentStrategy.IsLocked Then
+            MessageBox.Show("BASE 전략은 수정할 수 없습니다.", "알림")
+            Return
+        End If
         currentStrategy.Name = txtName.Text.Trim()
         currentStrategy.Description = txtDesc.Text.Trim()
         currentStrategy.StopLossPct = CDbl(nudStopLoss.Value)
@@ -240,6 +302,10 @@ Public Class StrategyManagerDialog
 
     Private Sub btnDelete_Click(sender As Object, e As EventArgs) Handles btnDelete.Click
         If currentStrategy Is Nothing Then Return
+        If currentStrategy.IsLocked Then
+            MessageBox.Show("BASE 전략은 삭제할 수 없습니다.", "알림")
+            Return
+        End If
         If MessageBox.Show($"'{currentStrategy.Name}' 삭제?", "확인", MessageBoxButtons.YesNo) = DialogResult.No Then Return
         StrategyStore.Delete(currentStrategy) : currentStrategy = Nothing
         LoadStrategies() : txtName.Clear() : txtDesc.Clear() : dgvBuy.Rows.Clear() : dgvSell.Rows.Clear()

@@ -137,13 +137,6 @@
     <Compile Include="Forms\StrategyManagerDialog.vb">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="PerfResultForm.vb">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="PerfResultForm.Designer.vb">
-      <DependentUpon>PerfResultForm.vb</DependentUpon>
-      <SubType>Form</SubType>
-    </Compile>
     <Compile Include="My Project\AssemblyInfo.vb" />
     <Compile Include="My Project\Application.Designer.vb">
       <AutoGen>True</AutoGen>
@@ -161,6 +154,7 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
     <Compile Include="Strategy\ChartRenderer.vb" />
+    <Compile Include="Strategy\RenkoCalculator.vb" />
     <Compile Include="Strategy\StrategyEngine.vb" />
     <Compile Include="Strategy\StrategyModels.vb" />
     <Compile Include="Strategy\TickIntensity.vb" />

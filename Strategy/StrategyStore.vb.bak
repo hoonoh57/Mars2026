@@ -1,0 +1,221 @@
+'=============================================================================
+' Strategy/StrategyStore.vb — JSON 기반 전략 CRUD + 버전 관리
+'=============================================================================
+Imports System.IO
+
+Public Class StrategyStore
+
+    Private Shared ReadOnly _folder As String =
+        Path.Combine(Application.StartupPath, "strategies")
+
+    ''' <summary>전략 저장. BASE는 IsLocked=True면 덮어쓰기 불가.</summary>
+    Public Shared Function Save(strategy As TradingStrategy) As Boolean
+        EnsureFolder()
+
+        ' BASE 보호: 이미 파일이 존재하고 IsLocked면 저장 거부
+        Dim filePath = Path.Combine(_folder, SafeFileName(strategy.Name) & ".json")
+        If File.Exists(filePath) Then
+            Dim existing = Load(strategy.Name)
+            If existing IsNot Nothing AndAlso existing.IsLocked Then
+                Return False  ' BASE 수정 불가
+            End If
+        End If
+
+        Dim json = SerializeStrategy(strategy)
+        File.WriteAllText(filePath, json, System.Text.Encoding.UTF8)
+        Return True
+    End Function
+
+    ''' <summary>이름으로 전략 로드</summary>
+    Public Shared Function Load(name As String) As TradingStrategy
+        EnsureFolder()
+        Dim filePath = Path.Combine(_folder, SafeFileName(name) & ".json")
+        If Not File.Exists(filePath) Then Return Nothing
+        Dim json = File.ReadAllText(filePath, System.Text.Encoding.UTF8)
+        Return DeserializeStrategy(json)
+    End Function
+
+    ''' <summary>모든 전략 로드 (BASE 우선 정렬)</summary>
+    Public Shared Function LoadAll() As List(Of TradingStrategy)
+        EnsureFolder()
+        Dim result As New List(Of TradingStrategy)
+        For Each f In Directory.GetFiles(_folder, "*.json")
+            Try
+                Dim json = File.ReadAllText(f, System.Text.Encoding.UTF8)
+                Dim s = DeserializeStrategy(json)
+                If s IsNot Nothing Then result.Add(s)
+            Catch
+            End Try
+        Next
+        ' BASE 우선, 그 다음 DRAFT, CANDIDATE, PROMOTED 순
+        result.Sort(Function(a, b)
+                        Dim order = "BASE,DRAFT,CANDIDATE,PROMOTED"
+                        Dim ia = order.IndexOf(If(a.Grade, "DRAFT"))
+                        Dim ib = order.IndexOf(If(b.Grade, "DRAFT"))
+                        If ia <> ib Then Return ia.CompareTo(ib)
+                        Return String.Compare(a.Name, b.Name)
+                    End Function)
+        Return result
+    End Function
+
+    ''' <summary>전략 삭제. BASE는 삭제 불가.</summary>
+    Public Shared Function Delete(name As String) As Boolean
+        Dim s = Load(name)
+        If s IsNot Nothing AndAlso s.IsLocked Then Return False  ' BASE 보호
+
+        Dim filePath = Path.Combine(_folder, SafeFileName(name) & ".json")
+        If File.Exists(filePath) Then
+            File.Delete(filePath)
+            Return True
+        End If
+        Return False
+    End Function
+
+    ''' <summary>BASE 전략 목록만 반환</summary>
+    Public Shared Function LoadBaseStrategies() As List(Of TradingStrategy)
+        Return LoadAll().Where(Function(s) s.Grade = "BASE").ToList()
+    End Function
+
+    ' ═══════════════════════════════════════════════════════════════════════
+    '  직렬화 / 역직렬화 (외부 라이브러리 없이 수동 구현)
+    ' ═══════════════════════════════════════════════════════════════════════
+
+    Private Shared Function SerializeStrategy(s As TradingStrategy) As String
+        Dim sb As New System.Text.StringBuilder()
+        sb.AppendLine("{")
+        sb.AppendLine($"  ""Name"": ""{Esc(s.Name)}"",")
+        sb.AppendLine($"  ""Description"": ""{Esc(s.Description)}"",")
+
+        ' BuyConditions
+        sb.AppendLine("  ""BuyConditions"": [")
+        For i = 0 To s.BuyConditions.Count - 1
+            Dim c = s.BuyConditions(i)
+            Dim comma = If(i < s.BuyConditions.Count - 1, ",", "")
+            sb.AppendLine($"    {{""Indicator"":""{Esc(c.Indicator)}"",""Operator"":""{Esc(c.Operator)}"",""Target"":""{Esc(c.Target)}"",""Value"":{c.Value}}}{comma}")
+        Next
+        sb.AppendLine("  ],")
+
+        ' SellConditions
+        sb.AppendLine("  ""SellConditions"": [")
+        For i = 0 To s.SellConditions.Count - 1
+            Dim c = s.SellConditions(i)
+            Dim comma = If(i < s.SellConditions.Count - 1, ",", "")
+            sb.AppendLine($"    {{""Indicator"":""{Esc(c.Indicator)}"",""Operator"":""{Esc(c.Operator)}"",""Target"":""{Esc(c.Target)}"",""Value"":{c.Value}}}{comma}")
+        Next
+        sb.AppendLine("  ],")
+
+        sb.AppendLine($"  ""StopLossPct"": {s.StopLossPct},")
+        sb.AppendLine($"  ""TakeProfitPct"": {s.TakeProfitPct},")
+        sb.AppendLine($"  ""MaxHoldBars"": {s.MaxHoldBars},")
+        sb.AppendLine($"  ""Grade"": ""{Esc(s.Grade)}"",")
+        sb.AppendLine($"  ""Version"": ""{Esc(s.Version)}"",")
+        sb.AppendLine($"  ""ParentName"": ""{Esc(s.ParentName)}"",")
+        sb.AppendLine($"  ""IsLocked"": {s.IsLocked.ToString().ToLower()},")
+        sb.AppendLine($"  ""CreatedDate"": ""{Esc(s.CreatedDate)}"",")
+        sb.AppendLine($"  ""ChangeLog"": ""{Esc(s.ChangeLog)}"",")
+        sb.AppendLine($"  ""BaselineWinRate"": {s.BaselineWinRate},")
+        sb.AppendLine($"  ""BaselineAvgReturn"": {s.BaselineAvgReturn},")
+        sb.AppendLine($"  ""BaselineSampleCount"": {s.BaselineSampleCount},")
+        sb.AppendLine($"  ""TestWinRate"": {s.TestWinRate},")
+        sb.AppendLine($"  ""TestAvgReturn"": {s.TestAvgReturn},")
+        sb.AppendLine($"  ""TestSampleCount"": {s.TestSampleCount},")
+        sb.AppendLine($"  ""TestPeriod"": ""{Esc(s.TestPeriod)}""")
+        sb.AppendLine("}")
+        Return sb.ToString()
+    End Function
+
+    Private Shared Function DeserializeStrategy(json As String) As TradingStrategy
+        Dim s As New TradingStrategy()
+        Try
+            s.Name = ExtractString(json, "Name")
+            s.Description = ExtractString(json, "Description")
+            s.StopLossPct = ExtractDouble(json, "StopLossPct")
+            s.TakeProfitPct = ExtractDouble(json, "TakeProfitPct")
+            s.MaxHoldBars = CInt(ExtractDouble(json, "MaxHoldBars"))
+            s.Grade = ExtractString(json, "Grade")
+            If String.IsNullOrEmpty(s.Grade) Then s.Grade = "DRAFT"
+            s.Version = ExtractString(json, "Version")
+            s.ParentName = ExtractString(json, "ParentName")
+            s.IsLocked = ExtractBool(json, "IsLocked")
+            s.CreatedDate = ExtractString(json, "CreatedDate")
+            s.ChangeLog = ExtractString(json, "ChangeLog")
+            s.BaselineWinRate = ExtractDouble(json, "BaselineWinRate")
+            s.BaselineAvgReturn = ExtractDouble(json, "BaselineAvgReturn")
+            s.BaselineSampleCount = CInt(ExtractDouble(json, "BaselineSampleCount"))
+            s.TestWinRate = ExtractDouble(json, "TestWinRate")
+            s.TestAvgReturn = ExtractDouble(json, "TestAvgReturn")
+            s.TestSampleCount = CInt(ExtractDouble(json, "TestSampleCount"))
+            s.TestPeriod = ExtractString(json, "TestPeriod")
+            s.BuyConditions = ExtractConditions(json, "BuyConditions")
+            s.SellConditions = ExtractConditions(json, "SellConditions")
+        Catch
+        End Try
+        Return s
+    End Function
+
+    ' ─── 파싱 헬퍼 ─────────────────────────────────────────────────────
+
+    Private Shared Function ExtractString(json As String, key As String) As String
+        Dim pattern = $"""{key}""\s*:\s*""([^""]*)"""
+        Dim m = System.Text.RegularExpressions.Regex.Match(json, pattern)
+        Return If(m.Success, m.Groups(1).Value, "")
+    End Function
+
+    Private Shared Function ExtractDouble(json As String, key As String) As Double
+        Dim pattern = $"""{key}""\s*:\s*([-\d.]+)"
+        Dim m = System.Text.RegularExpressions.Regex.Match(json, pattern)
+        If m.Success Then
+            Dim d As Double
+            If Double.TryParse(m.Groups(1).Value, d) Then Return d
+        End If
+        Return 0
+    End Function
+
+    Private Shared Function ExtractBool(json As String, key As String) As Boolean
+        Dim pattern = $"""{key}""\s*:\s*(true|false)"
+        Dim m = System.Text.RegularExpressions.Regex.Match(json, pattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        Return m.Success AndAlso m.Groups(1).Value.ToLower() = "true"
+    End Function
+
+    Private Shared Function ExtractConditions(json As String, key As String) As List(Of StrategyCondition)
+        Dim result As New List(Of StrategyCondition)
+        Dim pattern = $"""{key}""\s*:\s*\[(.*?)\]"
+        Dim m = System.Text.RegularExpressions.Regex.Match(json, pattern,
+                    System.Text.RegularExpressions.RegexOptions.Singleline)
+        If Not m.Success Then Return result
+
+        Dim block = m.Groups(1).Value
+        Dim condPattern = "\{[^}]+\}"
+        For Each cm As System.Text.RegularExpressions.Match In
+            System.Text.RegularExpressions.Regex.Matches(block, condPattern)
+            Dim c As New StrategyCondition()
+            c.Indicator = ExtractString(cm.Value, "Indicator")
+            c.Operator = ExtractString(cm.Value, "Operator")
+            c.Target = ExtractString(cm.Value, "Target")
+            c.Value = ExtractDouble(cm.Value, "Value")
+            result.Add(c)
+        Next
+        Return result
+    End Function
+
+    ' ─── 유틸리티 ───────────────────────────────────────────────────────
+
+    Private Shared Function Esc(s As String) As String
+        If s Is Nothing Then Return ""
+        Return s.Replace("\", "\\").Replace("""", "\""")
+    End Function
+
+    Private Shared Function SafeFileName(name As String) As String
+        Dim safe = name
+        For Each c In IO.Path.GetInvalidFileNameChars()
+            safe = safe.Replace(c, "_"c)
+        Next
+        Return safe
+    End Function
+
+    Private Shared Sub EnsureFolder()
+        If Not Directory.Exists(_folder) Then Directory.CreateDirectory(_folder)
+    End Sub
+
+End Class

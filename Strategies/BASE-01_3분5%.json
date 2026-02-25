@@ -1,0 +1,36 @@
+{
+  "Name": "BASE-01_3분5%",
+  "Description": "데이터 검증 기본전략: 3분변화율 5% 초과 시 진입. 적중률75.4% 평균수익14.04% 표본65건",
+  "BuyConditions": [
+    {
+      "Indicator": "CHG3M",
+      "Operator": ">",
+      "Target": "Value",
+      "Value": 5.0
+    }
+  ],
+  "SellConditions": [
+    {
+      "Indicator": "JMA",
+      "Operator": "TurnDown",
+      "Target": "",
+      "Value": 0
+    }
+  ],
+  "StopLossPct": 2.0,
+  "TakeProfitPct": 14.0,
+  "MaxHoldBars": 60,
+  "Grade": "BASE",
+  "Version": "v1",
+  "ParentName": "",
+  "IsLocked": true,
+  "CreatedDate": "2026-02-25",
+  "ChangeLog": "데이터 분석 원본. 수정 불가.",
+  "BaselineWinRate": 75.4,
+  "BaselineAvgReturn": 14.04,
+  "BaselineSampleCount": 65,
+  "TestWinRate": 75.4,
+  "TestAvgReturn": 14.04,
+  "TestSampleCount": 65,
+  "TestPeriod": "전기간"
+}

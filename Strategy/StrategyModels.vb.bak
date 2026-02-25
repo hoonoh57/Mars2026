@@ -1,0 +1,82 @@
+﻿'=============================================================================
+' Strategy/StrategyModels.vb — 전략 데이터 모델
+'=============================================================================
+
+''' <summary>매매 조건 1개</summary>
+Public Class StrategyCondition
+    Public Property Indicator As String = ""
+    Public Property [Operator] As String = ""
+    Public Property Target As String = ""
+    Public Property Value As Double = 0
+End Class
+
+''' <summary>매매 전략</summary>
+Public Class TradingStrategy
+    ' --- 기본 ---
+    Public Property Name As String = ""
+    Public Property Description As String = ""
+    Public Property BuyConditions As New List(Of StrategyCondition)
+    Public Property SellConditions As New List(Of StrategyCondition)
+    Public Property StopLossPct As Double = 2.0
+    Public Property TakeProfitPct As Double = 14.0
+    Public Property MaxHoldBars As Integer = 60
+
+    ' --- 버전 관리 ---
+    Public Property Grade As String = "DRAFT"          ' BASE, DRAFT, CANDIDATE, PROMOTED
+    Public Property Version As String = "v1"
+    Public Property ParentName As String = ""           ' 원본 BASE 이름
+    Public Property IsLocked As Boolean = False         ' BASE=True
+    Public Property CreatedDate As String = ""
+    Public Property ChangeLog As String = ""
+
+    ' --- 검증 기록 ---
+    Public Property BaselineWinRate As Double = 0       ' 원본 BASE 적중률
+    Public Property BaselineAvgReturn As Double = 0     ' 원본 BASE 수익률
+    Public Property BaselineSampleCount As Integer = 0
+    Public Property TestWinRate As Double = 0
+    Public Property TestAvgReturn As Double = 0
+    Public Property TestSampleCount As Integer = 0
+    Public Property TestPeriod As String = ""
+End Class
+
+''' <summary>신호 유형</summary>
+Public Enum SignalType
+    Buy = 0
+    Sell = 1
+    StopLoss = 2
+    TakeProfit = 3
+End Enum
+
+''' <summary>매매 신호 (차트에 표시)</summary>
+Public Class TradeSignal
+    Public Property BarIndex As Integer = 0
+    Public Property Time As String = ""
+    Public Property Price As Double = 0
+    Public Property Signal As SignalType = SignalType.Buy
+End Class
+
+''' <summary>매매 상세 기록</summary>
+Public Class TradeDetail
+    Public Property EntryTime As String = ""
+    Public Property ExitTime As String = ""
+    Public Property EntryPrice As Double = 0
+    Public Property ExitPrice As Double = 0
+    Public Property ReturnPct As Double = 0
+    Public Property HoldBars As Integer = 0
+    Public Property ExitReason As String = ""
+End Class
+
+''' <summary>전략 성과</summary>
+Public Class StrategyPerformance
+    Public Property StrategyName As String = ""
+    Public Property Signals As New List(Of TradeSignal)
+    Public Property Trades As New List(Of TradeDetail)
+    Public Property TotalTrades As Integer = 0
+    Public Property WinCount As Integer = 0
+    Public Property LoseCount As Integer = 0
+    Public Property WinRate As Double = 0
+    Public Property TotalReturnPct As Double = 0
+    Public Property AvgReturnPct As Double = 0
+    Public Property MaxDrawdownPct As Double = 0
+    Public Property ProfitFactor As Double = 0
+End Class

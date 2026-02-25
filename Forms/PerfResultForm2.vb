@@ -52,6 +52,11 @@ Public Class PerfResultForm2
     Private chartData As DataTable = Nothing
     Private crosshairMousePt As Point = Point.Empty
 
+    ' ── 일괄 분석 ──
+    Private WithEvents btnBatchAnalysis As New Button()
+    Private dgvBatchResult As New DataGridView()
+
+
     ' ── 쿼리 저장 폴더 ──
     Private ReadOnly Property QueryFolderPath As String
         Get
@@ -79,7 +84,71 @@ Public Class PerfResultForm2
         tabControl.TabPages.Add(tabInput)
         tabControl.TabPages.Add(tabSql)
         tabControl.TabPages.Add(tabCandle)
+
+        ' ★ BASE 전략 자동 등록
+        EnsureBaseStrategies()
     End Sub
+
+    ' ══════════════════════════════════════════
+    '  기준 전략 자동 등록
+    ' ══════════════════════════════════════════
+    Private Sub EnsureBaseStrategies()
+
+        ' ── BASE-01: 3분5% (검증 완료, 불변) ──
+        If StrategyStore.Load("BASE-01_3분5%") Is Nothing Then
+            Dim s As New TradingStrategy()
+            s.Name = "BASE-01_3분5%" : s.Description = "3분 변화율 > 5% 단일 조건. 적중률 75.4%, 평균수익 14.04%"
+            s.Grade = "BASE" : s.Version = "v1" : s.IsLocked = True : s.IsActive = True
+            s.StopLossPct = -2.0 : s.TakeProfitPct = 10.0 : s.MaxHoldBars = 60
+            s.BaselineWinRate = 75.4 : s.BaselineAvgReturn = 14.04 : s.BaselineSampleCount = 65
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "CHG3M", .Operator = ">", .Value = 5})
+            s.SellConditions.Add(New StrategyCondition With {.Indicator = "JMA", .Operator = "TurnDown", .Value = 0})
+            StrategyStore.Save(s)
+        End If
+
+        ' ── BASE-02: 3분3%+거래량5만 ──
+        If StrategyStore.Load("BASE-02_3분3%거래량5만") Is Nothing Then
+            Dim s As New TradingStrategy()
+            s.Name = "BASE-02_3분3%거래량5만" : s.Description = "3분>3% AND 거래량>50000. 적중률 65.3%, 평균수익 13.02%"
+            s.Grade = "BASE" : s.Version = "v1" : s.IsLocked = True : s.IsActive = True
+            s.StopLossPct = -2.0 : s.TakeProfitPct = 10.0 : s.MaxHoldBars = 60
+            s.BaselineWinRate = 65.3 : s.BaselineAvgReturn = 13.02 : s.BaselineSampleCount = 95
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "CHG3M", .Operator = ">", .Value = 3})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "Volume", .Operator = ">", .Value = 50000})
+            s.SellConditions.Add(New StrategyCondition With {.Indicator = "JMA", .Operator = "TurnDown", .Value = 0})
+            StrategyStore.Save(s)
+        End If
+
+        ' ── BASE-03: 통합 전략 (TI_v2 + RSI정배열 + VI직전매도) ──
+        If StrategyStore.Load("BASE-03_통합전략") Is Nothing Then
+            Dim s As New TradingStrategy()
+            s.Name = "BASE-03_통합전략"
+            s.Description = "Close>ST + TI_v2>3 + TickMA5>TickMA20 + RSI정배열 + JMA반전 + 이격도<20% + VI직전매도(8%)"
+            s.Grade = "BASE" : s.Version = "v1" : s.IsLocked = True : s.IsActive = True
+            s.StopLossPct = -2.0 : s.TakeProfitPct = 10.0 : s.MaxHoldBars = 30
+            s.BaselineWinRate = 0 : s.BaselineAvgReturn = 0 : s.BaselineSampleCount = 0
+
+            ' 매수 조건
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "Close", .Operator = ">", .Target = "SuperTrend", .Value = 0})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "GAP_MA120", .Operator = "<", .Value = 20})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "TI_V2", .Operator = ">", .Value = 3})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "TickMA5", .Operator = ">", .Target = "TickMA20", .Value = 0})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "RSI14", .Operator = ">", .Value = 50})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "RSI5", .Operator = ">", .Value = 50})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "RSI50", .Operator = ">", .Value = 50})
+            s.BuyConditions.Add(New StrategyCondition With {.Indicator = "JMA", .Operator = "TurnUp", .Value = 0})
+
+            ' 매도 조건 (JMA 하락반전)
+            s.SellConditions.Add(New StrategyCondition With {.Indicator = "JMA", .Operator = "TurnDown", .Value = 0})
+
+            ' 매도 유예 (SuperTrend 상승 유지 시)
+            s.HoldConditions.Add(New StrategyCondition With {.Indicator = "STDir", .Operator = "=", .Value = 1})
+
+            StrategyStore.Save(s)
+        End If
+
+    End Sub
+
 
     ' ══════════════════════════════════════════
     '  탭1: 성과검증 입력 UI (기존 유지)
@@ -380,7 +449,21 @@ Public Class PerfResultForm2
             .FlatStyle = FlatStyle.Flat, .Margin = New Padding(10, 3, 0, 0)
         }
         AddHandler btnLoadPerfData.Click, AddressOf BtnLoadPerfData_Click
-        pnlDateRow.Controls.AddRange({lblSelDate, dtpCandleDate, btnLoadPerfData})
+
+        ' ── 일괄 분석 버튼 ──
+        btnBatchAnalysis = New Button() With {
+            .Text = "★ 전략 일괄 비교 분석", .Size = New Size(170, 28),
+            .BackColor = Color.FromArgb(180, 0, 0), .ForeColor = Color.White,
+            .FlatStyle = FlatStyle.Flat, .Margin = New Padding(20, 3, 0, 0),
+            .Font = New Font("맑은 고딕", 9, FontStyle.Bold)
+        }
+        AddHandler btnBatchAnalysis.Click, AddressOf BtnBatchAnalysis_Click
+
+
+
+
+
+        pnlDateRow.Controls.AddRange({lblSelDate, dtpCandleDate, btnLoadPerfData, btnBatchAnalysis})
 
         ' ── 2행: 종목코드 / 종목명 / 분봉·틱봉 설정 / 다운로드 ──
         Dim pnlSettingRow As New FlowLayoutPanel() With {
@@ -678,6 +761,475 @@ Public Class PerfResultForm2
 
     End Sub
 
+
+    '////////////////////////////////////////////////
+    ' ══════════════════════════════════════════
+    '  전략 일괄 비교 분석
+    ' ══════════════════════════════════════════
+    Private Sub BtnBatchAnalysis_Click(sender As Object, e As EventArgs)
+        ' 전략 로드
+        Dim strategies = StrategyStore.LoadAll()
+        If strategies.Count = 0 Then
+            MessageBox.Show("등록된 전략이 없습니다.", "알림") : Return
+        End If
+
+        ' DB에서 전체 일자/종목 조회
+        Dim stockList As New List(Of BatchStockInfo)
+        Try
+            Using conn = DbHelper.CreateConnection()
+                conn.Open()
+                Dim sql = "SELECT target_date, code, name, market, max_ret, search_time " &
+                          "FROM perf_result WHERE YEAR(target_date) = YEAR(CURDATE()) " &
+                          "ORDER BY target_date DESC, max_ret DESC"
+                Using cmd As New MySql.Data.MySqlClient.MySqlCommand(sql, conn)
+                    Using rdr = cmd.ExecuteReader()
+                        While rdr.Read()
+                            Dim info As New BatchStockInfo()
+                            info.TargetDate = CDate(rdr("target_date"))
+                            info.Code = rdr("code").ToString()
+                            info.Name = rdr("name").ToString()
+                            info.Market = rdr("market").ToString()
+                            info.MaxRet = If(IsDBNull(rdr("max_ret")), 0D, CDec(rdr("max_ret")))
+                            info.SearchTime = rdr("search_time").ToString()
+                            stockList.Add(info)
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            MessageBox.Show($"DB 조회 오류: {ex.Message}", "오류") : Return
+        End Try
+
+        If stockList.Count = 0 Then
+            MessageBox.Show("금년도 성과검증 데이터가 없습니다.", "알림") : Return
+        End If
+
+        ' 확인
+        Dim dates = stockList.Select(Function(s) s.TargetDate).Distinct().OrderByDescending(Function(d) d).ToList()
+        If MessageBox.Show(
+            $"분석 대상: {dates.Count}일, {stockList.Count}종목" & vbCrLf &
+            $"전략: {strategies.Count}개" & vbCrLf &
+            $"총 백테스트: {stockList.Count * strategies.Count}회" & vbCrLf & vbCrLf &
+            "진행하시겠습니까? (캔들 다운로드가 필요하여 시간이 소요됩니다)",
+            "일괄 분석 확인", MessageBoxButtons.YesNo, MessageBoxIcon.Question) = DialogResult.No Then Return
+
+        ' 결과 테이블 생성
+        Dim resultDt As New DataTable()
+        resultDt.Columns.Add("일자", GetType(String))
+        resultDt.Columns.Add("종목코드", GetType(String))
+        resultDt.Columns.Add("종목명", GetType(String))
+        resultDt.Columns.Add("시장", GetType(String))
+        resultDt.Columns.Add("실제최고%", GetType(Double))
+        resultDt.Columns.Add("10%+실제", GetType(String))
+        For Each strat In strategies
+            resultDt.Columns.Add($"{strat.Name}_거래수", GetType(Integer))
+            resultDt.Columns.Add($"{strat.Name}_승률%", GetType(Double))
+            resultDt.Columns.Add($"{strat.Name}_총수익%", GetType(Double))
+            resultDt.Columns.Add($"{strat.Name}_최대상승%", GetType(Double))
+        Next
+
+        ' 요약 집계
+        Dim summaries As New Dictionary(Of String, BatchSummary)
+        For Each strat In strategies
+            summaries(strat.Name) = New BatchSummary() With {.StrategyName = strat.Name}
+        Next
+
+        ' 진행
+        Dim processed = 0
+        Dim failed = 0
+        lblCandleStatus.Text = "일괄 분석 시작..."
+        lblCandleStatus.ForeColor = Color.DarkOrange
+        Application.DoEvents()
+
+        For Each stock In stockList
+            processed += 1
+            If processed Mod 5 = 0 Then
+                lblCandleStatus.Text = $"분석 중... {processed}/{stockList.Count} ({failed}건 실패)"
+                Application.DoEvents()
+            End If
+
+            ' 캔들 다운로드
+            Dim candleDt As DataTable = Nothing
+            Try
+                candleDt = DownloadCandleForBatch(stock.Code, stock.TargetDate)
+            Catch
+                failed += 1 : Continue For
+            End Try
+
+            If candleDt Is Nothing OrElse candleDt.Rows.Count < 5 Then
+                failed += 1 : Continue For
+            End If
+
+            ' 각 전략 적용
+            Dim row = resultDt.NewRow()
+            row("일자") = stock.TargetDate.ToString("yyyy-MM-dd")
+            row("종목코드") = stock.Code
+            row("종목명") = stock.Name
+            row("시장") = stock.Market
+            row("실제최고%") = CDbl(stock.MaxRet)
+            row("10%+실제") = If(stock.MaxRet >= 10, "★", "")
+
+            For Each strat In strategies
+                Dim perf As StrategyPerformance = Nothing
+                Try
+                    perf = StrategyEngine.Evaluate(strat, candleDt)
+                Catch
+                    Continue For
+                End Try
+
+                row($"{strat.Name}_거래수") = perf.TotalTrades
+                row($"{strat.Name}_승률%") = Math.Round(perf.WinRate, 1)
+                row($"{strat.Name}_총수익%") = Math.Round(perf.TotalReturnPct, 2)
+
+                ' 매매 중 최대 상승률
+                Dim maxRise As Double = 0
+                If perf.TradeDetails.Count > 0 Then
+                    maxRise = perf.TradeDetails.Max(Function(t) t.MaxRisePct)
+                End If
+                row($"{strat.Name}_최대상승%") = Math.Round(maxRise, 2)
+
+                ' 요약 집계
+                Dim sm = summaries(strat.Name)
+                sm.TotalStocks += 1
+                sm.TotalTrades += perf.TotalTrades
+                sm.TotalWins += perf.WinTrades
+                sm.TotalLosses += perf.LossTrades
+                sm.SumReturn += perf.TotalReturnPct
+                If stock.MaxRet >= 10 Then
+                    sm.Actual10PlusCount += 1
+                End If
+                If maxRise >= 10 Then
+                    sm.Strategy10PlusCount += 1
+                End If
+                If perf.TotalTrades > 0 AndAlso perf.TotalReturnPct > 0 Then
+                    sm.ProfitStocks += 1
+                End If
+            Next
+
+            resultDt.Rows.Add(row)
+        Next
+
+        ' 결과 표시
+        ShowBatchResult(resultDt, summaries, strategies, stockList.Count, dates.Count, failed)
+
+        lblCandleStatus.Text = $"일괄 분석 완료: {stockList.Count}종목, {dates.Count}일, 실패:{failed}건"
+        lblCandleStatus.ForeColor = Color.DarkGreen
+    End Sub
+    ' ── 일괄 분석용 캔들 다운로드 ──
+    Private Function DownloadCandleForBatch(code As String, targetDate As Date) As DataTable
+        Dim minuteType = cboMinuteType.SelectedItem.ToString()
+        Dim tickType = cboTickType.SelectedItem.ToString()
+        Dim stopTime = targetDate.AddHours(9).AddMinutes(10).ToString("yyyyMMddHHmmss")
+        Dim cnt = CInt(nudMinuteCount.Value)
+
+        ' 분봉 다운로드
+        Dim minuteUrl = ApiClient.MinuteCandleUrl(code, minuteType, cnt.ToString(), stopTime)
+        Dim json = ApiClient.DownloadJson(minuteUrl)
+        If String.IsNullOrEmpty(json) Then Return Nothing
+
+        Dim dt = JsonParser.ParseCandles(json)
+        If dt Is Nothing OrElse dt.Rows.Count = 0 Then Return Nothing
+
+        ' 틱 캔들에서 틱강도 계산하여 분봉에 병합
+        Try
+            Dim tickUrl = ApiClient.TickCandleUrl(code, tickType, (cnt * 10).ToString(), stopTime)
+            Dim tickJson = ApiClient.DownloadJson(tickUrl)
+            If Not String.IsNullOrEmpty(tickJson) Then
+                Dim tickDt = JsonParser.ParseCandles(tickJson)
+                If tickDt IsNot Nothing AndAlso tickDt.Rows.Count > 0 Then
+                    MergeTickIntensity(dt, tickDt)
+                End If
+            End If
+        Catch
+            ' 틱 데이터 실패 시 틱강도 없이 진행
+        End Try
+
+        Return dt
+    End Function
+
+    ' ── 틱 데이터 → 분봉 틱강도 병합 ──
+    Private Sub MergeTickIntensity(minuteDt As DataTable, tickDt As DataTable)
+        If Not minuteDt.Columns.Contains("틱강도") Then
+            minuteDt.Columns.Add("틱강도", GetType(Integer))
+        End If
+        If Not minuteDt.Columns.Contains("틱거래량") Then
+            minuteDt.Columns.Add("틱거래량", GetType(Long))
+        End If
+
+        ' 분봉 시간별 틱 카운트
+        For Each mRow As DataRow In minuteDt.Rows
+            Dim mTime = mRow("시간").ToString()
+            If String.IsNullOrEmpty(mTime) Then Continue For
+
+            ' 해당 분봉 시간 범위 내의 틱 수 계산
+            Dim tickCount = 0
+            Dim tickVol As Long = 0
+            For Each tRow As DataRow In tickDt.Rows
+                Dim tTime = tRow("시간").ToString()
+                ' 간단 매칭: 같은 분봉 시간대인지 체크
+                If MatchTimeRange(mTime, tTime) Then
+                    tickCount += 1
+                    If tickDt.Columns.Contains("거래량") AndAlso Not IsDBNull(tRow("거래량")) Then
+                        tickVol += CLng(tRow("거래량"))
+                    End If
+                End If
+            Next
+            mRow("틱강도") = tickCount
+            mRow("틱거래량") = tickVol
+        Next
+    End Sub
+
+    ' ── 시간 범위 매칭 (분봉 시간과 틱 시간 비교) ──
+    Private Function MatchTimeRange(minuteTime As String, tickTime As String) As Boolean
+        ' 둘 다 "yyyy-MM-dd HH:mm" 이상 형식 가정
+        Try
+            If minuteTime.Length >= 16 AndAlso tickTime.Length >= 16 Then
+                Return minuteTime.Substring(0, 16) = tickTime.Substring(0, 16)
+            ElseIf minuteTime.Length >= 12 AndAlso tickTime.Length >= 12 Then
+                Return minuteTime.Substring(0, 12) = tickTime.Substring(0, 12)
+            End If
+        Catch
+        End Try
+        Return False
+    End Function
+
+    ' ── 결과 표시 다이얼로그 ──
+    Private Sub ShowBatchResult(resultDt As DataTable,
+                                 summaries As Dictionary(Of String, BatchSummary),
+                                 strategies As List(Of TradingStrategy),
+                                 totalStocks As Integer, totalDays As Integer, failCount As Integer)
+
+        Dim dlg As New Form()
+        dlg.Text = "전략 일괄 비교 분석 결과"
+        dlg.Size = New Size(1300, 800)
+        dlg.StartPosition = FormStartPosition.CenterScreen
+
+        ' ── 요약 패널 ──
+        Dim pnlSummary As New Panel() With {.Dock = DockStyle.Top, .Height = 200, .BackColor = Color.FromArgb(20, 20, 30)}
+
+        Dim summaryText As New Text.StringBuilder()
+        summaryText.AppendLine($"═══ 전략 일괄 비교 분석 결과 ═══")
+        summaryText.AppendLine($"분석 기간: 금년도 | 일수: {totalDays}일 | 종목: {totalStocks}건 | 실패: {failCount}건")
+        summaryText.AppendLine()
+        summaryText.AppendLine(String.Format("{0,-25} {1,8} {2,8} {3,8} {4,10} {5,10} {6,10} {7,10}",
+            "전략명", "종목수", "거래수", "승수", "승률%", "총수익%", "실제10%+", "전략10%+"))
+        summaryText.AppendLine(New String("─"c, 100))
+
+        For Each strat In strategies
+            If summaries.ContainsKey(strat.Name) Then
+                Dim sm = summaries(strat.Name)
+                Dim winRate = If(sm.TotalTrades > 0, sm.TotalWins / CDbl(sm.TotalTrades) * 100, 0)
+                Dim avgReturn = If(sm.TotalStocks > 0, sm.SumReturn / sm.TotalStocks, 0)
+                summaryText.AppendLine(String.Format("{0,-25} {1,8} {2,8} {3,8} {4,10:N1} {5,10:N2} {6,10} {7,10}",
+                    strat.Name, sm.TotalStocks, sm.TotalTrades, sm.TotalWins,
+                    winRate, sm.SumReturn,
+                    sm.Actual10PlusCount, sm.Strategy10PlusCount))
+            End If
+        Next
+
+        summaryText.AppendLine()
+        summaryText.AppendLine("── 10%+ 적중률 비교 ──")
+        For Each strat In strategies
+            If summaries.ContainsKey(strat.Name) Then
+                Dim sm = summaries(strat.Name)
+                Dim actual10Rate = If(sm.TotalStocks > 0, sm.Actual10PlusCount / CDbl(sm.TotalStocks) * 100, 0)
+                Dim strat10Rate = If(sm.TotalStocks > 0, sm.Strategy10PlusCount / CDbl(sm.TotalStocks) * 100, 0)
+                Dim profitRate = If(sm.TotalStocks > 0, sm.ProfitStocks / CDbl(sm.TotalStocks) * 100, 0)
+                summaryText.AppendLine($"  {strat.Name}: 실제10%+={sm.Actual10PlusCount}건({actual10Rate:N1}%) | " &
+                    $"전략포착10%+={sm.Strategy10PlusCount}건({strat10Rate:N1}%) | " &
+                    $"수익종목={sm.ProfitStocks}건({profitRate:N1}%)")
+            End If
+        Next
+
+        Dim txtSummary As New TextBox() With {
+            .Multiline = True, .ReadOnly = True, .ScrollBars = ScrollBars.Vertical,
+            .Dock = DockStyle.Fill, .Font = New Font("Consolas", 9.5F),
+            .BackColor = Color.FromArgb(20, 20, 30), .ForeColor = Color.FromArgb(200, 255, 200),
+            .Text = summaryText.ToString()
+        }
+        pnlSummary.Controls.Add(txtSummary)
+
+        ' ── 상세 그리드 ──
+        Dim dgv As New DataGridView() With {
+            .Dock = DockStyle.Fill, .ReadOnly = True,
+            .AllowUserToAddRows = False,
+            .AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells,
+            .Font = New Font("맑은 고딕", 8.5),
+            .BackgroundColor = Color.White,
+            .AlternatingRowsDefaultCellStyle = New DataGridViewCellStyle() With {
+                .BackColor = Color.FromArgb(248, 248, 255)
+            }
+        }
+        dgv.DataSource = resultDt
+
+        ' 그리드 서식
+        AddHandler dgv.DataBindingComplete, Sub(s As Object, ev As DataGridViewBindingCompleteEventArgs)
+                                                For Each col As DataGridViewColumn In dgv.Columns
+                                                    If col.HeaderText.Contains("승률") OrElse col.HeaderText.Contains("수익") OrElse
+                                                       col.HeaderText.Contains("최고") OrElse col.HeaderText.Contains("상승") Then
+                                                        col.DefaultCellStyle.Format = "N2"
+                                                        col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight
+                                                    End If
+                                                    If col.HeaderText.Contains("거래수") Then
+                                                        col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight
+                                                    End If
+                                                Next
+                                            End Sub
+
+        AddHandler dgv.CellFormatting, Sub(s As Object, ev As DataGridViewCellFormattingEventArgs)
+                                           If ev.RowIndex < 0 Then Return
+                                           Dim colName = dgv.Columns(ev.ColumnIndex).HeaderText
+                                           ' 실제 10%+ 강조
+                                           If colName = "10%+실제" AndAlso ev.Value IsNot Nothing AndAlso ev.Value.ToString() = "★" Then
+                                               dgv.Rows(ev.RowIndex).DefaultCellStyle.BackColor = Color.FromArgb(255, 255, 210)
+                                           End If
+                                           ' 수익% 색상
+                                           If colName.Contains("수익%") AndAlso ev.Value IsNot Nothing Then
+                                               Dim val As Double = 0
+                                               If Double.TryParse(ev.Value.ToString(), val) Then
+                                                   If val > 0 Then
+                                                       ev.CellStyle.ForeColor = Color.Red
+                                                   ElseIf val < 0 Then
+                                                       ev.CellStyle.ForeColor = Color.Blue
+                                                   End If
+                                               End If
+                                           End If
+                                       End Sub
+
+        ' ── 내보내기 버튼 ──
+        Dim pnlBtn As New FlowLayoutPanel() With {.Dock = DockStyle.Bottom, .Height = 40, .Padding = New Padding(5)}
+        Dim btnExportCsv As New Button() With {
+            .Text = "CSV 내보내기", .Size = New Size(120, 30),
+            .BackColor = Color.FromArgb(0, 120, 60), .ForeColor = Color.White, .FlatStyle = FlatStyle.Flat
+        }
+        AddHandler btnExportCsv.Click, Sub()
+                                           Using sfd As New SaveFileDialog()
+                                               sfd.Filter = "CSV|*.csv"
+                                               sfd.FileName = $"전략비교_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+                                               If sfd.ShowDialog() = DialogResult.OK Then
+                                                   ExportDataTableToCsv(resultDt, sfd.FileName)
+                                                   MessageBox.Show($"저장 완료: {sfd.FileName}", "알림")
+                                               End If
+                                           End Using
+                                       End Sub
+
+        Dim btnSaveDb As New Button() With {
+            .Text = "DB에 결과 저장", .Size = New Size(120, 30),
+            .BackColor = Color.FromArgb(0, 80, 160), .ForeColor = Color.White, .FlatStyle = FlatStyle.Flat,
+            .Margin = New Padding(10, 0, 0, 0)
+        }
+        AddHandler btnSaveDb.Click, Sub()
+                                        SaveBatchResultToDb(resultDt, strategies)
+                                        MessageBox.Show("DB 저장 완료", "알림")
+                                    End Sub
+
+        pnlBtn.Controls.AddRange({btnExportCsv, btnSaveDb})
+
+        ' ── 조립 ──
+        Dim splitMain As New SplitContainer() With {
+            .Dock = DockStyle.Fill, .Orientation = Orientation.Horizontal,
+            .SplitterDistance = 200
+        }
+        splitMain.Panel1.Controls.Add(pnlSummary)
+        splitMain.Panel2.Controls.Add(dgv)
+
+        dlg.Controls.Add(splitMain)
+        dlg.Controls.Add(pnlBtn)
+        dlg.Show()
+    End Sub
+
+    ' ── CSV 내보내기 ──
+    Private Sub ExportDataTableToCsv(dt As DataTable, filePath As String)
+        Dim sb As New Text.StringBuilder()
+        ' 헤더
+        Dim headers As New List(Of String)
+        For Each col As DataColumn In dt.Columns
+            headers.Add(col.ColumnName)
+        Next
+        sb.AppendLine(String.Join(",", headers))
+        ' 데이터
+        For Each row As DataRow In dt.Rows
+            Dim vals As New List(Of String)
+            For Each col As DataColumn In dt.Columns
+                Dim v = row(col)
+                If v Is Nothing OrElse IsDBNull(v) Then
+                    vals.Add("")
+                Else
+                    vals.Add(v.ToString().Replace(",", ""))
+                End If
+            Next
+            sb.AppendLine(String.Join(",", vals))
+        Next
+        IO.File.WriteAllText(filePath, sb.ToString(), System.Text.Encoding.UTF8)
+    End Sub
+
+    ' ── DB에 결과 저장 ──
+    Private Sub SaveBatchResultToDb(resultDt As DataTable, strategies As List(Of TradingStrategy))
+        Try
+            Using conn = DbHelper.CreateConnection()
+                conn.Open()
+                ' 테이블 자동 생성
+                Dim createSql = "CREATE TABLE IF NOT EXISTS batch_analysis_result (" &
+                    "id INT AUTO_INCREMENT PRIMARY KEY, " &
+                    "analysis_date DATETIME DEFAULT CURRENT_TIMESTAMP, " &
+                    "target_date VARCHAR(10), " &
+                    "stock_code VARCHAR(20), " &
+                    "stock_name VARCHAR(100), " &
+                    "market VARCHAR(20), " &
+                    "actual_max_ret DOUBLE DEFAULT 0, " &
+                    "strategy_name VARCHAR(100), " &
+                    "trade_count INT DEFAULT 0, " &
+                    "win_rate DOUBLE DEFAULT 0, " &
+                    "total_return DOUBLE DEFAULT 0, " &
+                    "max_rise_pct DOUBLE DEFAULT 0, " &
+                    "INDEX idx_date_code (target_date, stock_code), " &
+                    "INDEX idx_strategy (strategy_name)" &
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                Using cmd As New MySql.Data.MySqlClient.MySqlCommand(createSql, conn)
+                    cmd.ExecuteNonQuery()
+                End Using
+
+                ' 데이터 삽입
+                For Each row As DataRow In resultDt.Rows
+                    For Each strat In strategies
+                        Dim insertSql = "INSERT INTO batch_analysis_result " &
+                            "(target_date, stock_code, stock_name, market, actual_max_ret, " &
+                            "strategy_name, trade_count, win_rate, total_return, max_rise_pct) " &
+                            "VALUES(@td, @sc, @sn, @mk, @amr, @stn, @tc, @wr, @tr, @mrp)"
+                        Using cmd As New MySql.Data.MySqlClient.MySqlCommand(insertSql, conn)
+                            cmd.Parameters.AddWithValue("@td", row("일자"))
+                            cmd.Parameters.AddWithValue("@sc", row("종목코드"))
+                            cmd.Parameters.AddWithValue("@sn", row("종목명"))
+                            cmd.Parameters.AddWithValue("@mk", row("시장"))
+                            cmd.Parameters.AddWithValue("@amr", row("실제최고%"))
+                            cmd.Parameters.AddWithValue("@stn", strat.Name)
+                            Dim tcCol = $"{strat.Name}_거래수"
+                            Dim wrCol = $"{strat.Name}_승률%"
+                            Dim trCol = $"{strat.Name}_총수익%"
+                            Dim mrCol = $"{strat.Name}_최대상승%"
+                            cmd.Parameters.AddWithValue("@tc", If(resultDt.Columns.Contains(tcCol), row(tcCol), 0))
+                            cmd.Parameters.AddWithValue("@wr", If(resultDt.Columns.Contains(wrCol), row(wrCol), 0))
+                            cmd.Parameters.AddWithValue("@tr", If(resultDt.Columns.Contains(trCol), row(trCol), 0))
+                            cmd.Parameters.AddWithValue("@mrp", If(resultDt.Columns.Contains(mrCol), row(mrCol), 0))
+                            cmd.ExecuteNonQuery()
+                        End Using
+                    Next
+                Next
+            End Using
+        Catch ex As Exception
+            MessageBox.Show($"DB 저장 오류: {ex.Message}", "오류")
+        End Try
+    End Sub
+
+
+
+    '////////////////////////////////////////////////
+
+
+
+
+
+
     ' ── 종목명 조회 ──
     Private Sub LookupStockName()
         Dim code = txtCandleCode.Text.Trim()
@@ -939,4 +1491,25 @@ Public Class PerfResultForm2
         End If
     End Sub
 
+End Class
+' ── 일괄 분석 데이터 모델 ──
+Public Class BatchStockInfo
+    Public Property TargetDate As Date
+    Public Property Code As String = ""
+    Public Property Name As String = ""
+    Public Property Market As String = ""
+    Public Property MaxRet As Decimal = 0
+    Public Property SearchTime As String = ""
+End Class
+
+Public Class BatchSummary
+    Public Property StrategyName As String = ""
+    Public Property TotalStocks As Integer = 0
+    Public Property TotalTrades As Integer = 0
+    Public Property TotalWins As Integer = 0
+    Public Property TotalLosses As Integer = 0
+    Public Property SumReturn As Double = 0
+    Public Property Actual10PlusCount As Integer = 0      ' 실제 10%+ 상승 종목 수
+    Public Property Strategy10PlusCount As Integer = 0    ' 전략이 포착한 10%+ 종목 수
+    Public Property ProfitStocks As Integer = 0           ' 수익 발생 종목 수
 End Class

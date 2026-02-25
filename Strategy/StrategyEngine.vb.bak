@@ -1,6 +1,6 @@
 ﻿' ===== Strategy/StrategyEngine.vb =====
 ' 전략 조건 평가 + 백테스트 엔진
-' VI 직전 매도 + 일일 매매 제한 + HoldConditions + TI_v2 + 이격도
+' TurnUp/TurnDown/Rising/Falling + (N) 이전봉 참조 지원
 
 Public Class StrategyEngine
 
@@ -8,7 +8,6 @@ Public Class StrategyEngine
     Public Shared Function Evaluate(strategy As TradingStrategy,
                                      chartData As DataTable) As StrategyPerformance
         Dim perf As New StrategyPerformance()
-        perf.StrategyName = strategy.Name
         If chartData Is Nothing OrElse chartData.Rows.Count < 3 Then Return perf
 
         Dim count = chartData.Rows.Count
@@ -18,31 +17,12 @@ Public Class StrategyEngine
         Dim indicators As New Dictionary(Of String, Double())
         BuildIndicators(chartData, indicators)
 
-        ' 당일 시가 (첫 봉의 시가)
-        Dim dayOpenPrice As Double = CDbl(rows(0)("시가"))
-
         ' 시뮬레이션
         Dim inPosition = False
         Dim entryIdx = 0, entryPrice As Double = 0
-        Dim dailyProfitDone As Boolean = False
-        Dim lastTradeDate As String = ""
-        Dim dailyTradeCount As Integer = 0
 
-        For i = 2 To count - 1
-            ' 일자 변경 감지
-            Dim currentDate As String = ExtractDate(rows(i)("시간").ToString())
-            If currentDate <> lastTradeDate Then
-                dailyProfitDone = False
-                dailyTradeCount = 0
-                lastTradeDate = currentDate
-                ' 새 일자 시작 시 시가 갱신
-                dayOpenPrice = CDbl(rows(i)("시가"))
-            End If
-
+        For i = 2 To count - 1  ' 최소 2봉 이전 참조 필요
             If Not inPosition Then
-                ' 일일 수익 매매 완료 → 스킵
-                If dailyProfitDone Then Continue For
-
                 If EvalConditions(strategy.BuyConditions, indicators, i, chartData) Then
                     inPosition = True : entryIdx = i
                     entryPrice = CDbl(rows(i)("종가"))
@@ -52,79 +32,51 @@ Public Class StrategyEngine
                 End If
             Else
                 Dim curPrice = CDbl(rows(i)("종가"))
-                Dim highPrice = CDbl(rows(i)("고가"))
                 Dim retPct = (curPrice - entryPrice) / entryPrice * 100
                 Dim holdBars = i - entryIdx
                 Dim doExit = False, exitReason = ""
-                Dim exitType = SignalType.Sell
 
-                ' 보유 중 최고가 대비 상승률 추적
-                Dim maxRise As Double = 0
-                For k = entryIdx To i
-                    Dim kHigh = CDbl(rows(k)("고가"))
-                    Dim kRise = (kHigh - entryPrice) / entryPrice * 100
-                    If kRise > maxRise Then maxRise = kRise
-                Next
-
-                ' ★ 1순위: VI 직전 매도 (시가 대비 8% 이상)
-                Dim riseFromOpen = (curPrice - dayOpenPrice) / dayOpenPrice * 100
-                Dim highRiseFromOpen = (highPrice - dayOpenPrice) / dayOpenPrice * 100
-                If highRiseFromOpen >= 8.0 Then
-                    doExit = True
-                    exitReason = $"VI직전매도(시가대비{highRiseFromOpen:N1}%)"
-                    exitType = SignalType.VIExit
-                End If
-
-                ' ★ 2순위: 손절
-                If Not doExit AndAlso retPct <= strategy.StopLossPct Then
+                ' 손절
+                If retPct <= strategy.StopLossPct Then
                     doExit = True : exitReason = $"손절({retPct:N2}%)"
-                    exitType = SignalType.StopLoss
+                    perf.Signals.Add(New TradeSignal() With {
+                        .BarIndex = i, .Type = SignalType.StopLoss, .Price = curPrice,
+                        .Time = rows(i)("시간").ToString(), .Reason = exitReason})
                 End If
 
-                ' ★ 3순위: 최대 보유
-                If Not doExit AndAlso holdBars >= strategy.MaxHoldBars Then
-                    doExit = True : exitReason = $"보유한도({holdBars}봉)"
-                    exitType = SignalType.Sell
-                End If
-
-                ' ★ 4순위: 익절
+                ' 익절
                 If Not doExit AndAlso retPct >= strategy.TakeProfitPct Then
                     doExit = True : exitReason = $"익절({retPct:N2}%)"
-                    exitType = SignalType.TakeProfit
+                    perf.Signals.Add(New TradeSignal() With {
+                        .BarIndex = i, .Type = SignalType.TakeProfit, .Price = curPrice,
+                        .Time = rows(i)("시간").ToString(), .Reason = exitReason})
                 End If
 
-                ' ★ 5순위: 매도 조건 (HoldConditions에 의한 유예 가능)
+                ' 최대 보유
+                If Not doExit AndAlso holdBars >= strategy.MaxHoldBars Then
+                    doExit = True : exitReason = $"보유한도({holdBars}봉)"
+                    perf.Signals.Add(New TradeSignal() With {
+                        .BarIndex = i, .Type = SignalType.Sell, .Price = curPrice,
+                        .Time = rows(i)("시간").ToString(), .Reason = exitReason})
+                End If
+
+                ' 매도 조건
                 If Not doExit AndAlso strategy.SellConditions.Count > 0 AndAlso
                    EvalConditions(strategy.SellConditions, indicators, i, chartData) Then
-
-                    ' 매도 유예 체크
-                    Dim holdOverride = False
-                    If strategy.HoldConditions.Count > 0 Then
-                        holdOverride = EvalConditions(strategy.HoldConditions, indicators, i, chartData)
-                    End If
-
-                    If Not holdOverride Then
-                        doExit = True : exitReason = "매도조건 충족"
-                        exitType = SignalType.Sell
-                    End If
+                    doExit = True : exitReason = "매도조건 충족"
+                    perf.Signals.Add(New TradeSignal() With {
+                        .BarIndex = i, .Type = SignalType.Sell, .Price = curPrice,
+                        .Time = rows(i)("시간").ToString(), .Reason = exitReason})
                 End If
 
                 If doExit Then
-                    perf.Signals.Add(New TradeSignal() With {
-                        .BarIndex = i, .Type = exitType, .Price = curPrice,
-                        .Time = rows(i)("시간").ToString(), .Reason = exitReason})
                     perf.TradeDetails.Add(New TradeDetail() With {
                         .EntryIndex = entryIdx, .ExitIndex = i,
                         .EntryPrice = entryPrice, .ExitPrice = curPrice,
                         .ReturnPct = retPct, .HoldBars = holdBars,
-                        .MaxRisePct = maxRise,
                         .EntryTime = rows(entryIdx)("시간").ToString(),
                         .ExitTime = rows(i)("시간").ToString(), .ExitReason = exitReason})
                     inPosition = False
-                    dailyTradeCount += 1
-
-                    ' 수익 매매 완료 시 당일 매매 종료
-                    If retPct > 0 Then dailyProfitDone = True
                 End If
             End If
         Next
@@ -132,55 +84,32 @@ Public Class StrategyEngine
         ' 미청산
         If inPosition Then
             Dim lp = CDbl(rows(count - 1)("종가"))
-            Dim maxR As Double = 0
-            For k = entryIdx To count - 1
-                Dim kH = CDbl(rows(k)("고가"))
-                Dim kR = (kH - entryPrice) / entryPrice * 100
-                If kR > maxR Then maxR = kR
-            Next
             perf.TradeDetails.Add(New TradeDetail() With {
                 .EntryIndex = entryIdx, .ExitIndex = count - 1,
                 .EntryPrice = entryPrice, .ExitPrice = lp,
                 .ReturnPct = (lp - entryPrice) / entryPrice * 100,
-                .HoldBars = count - 1 - entryIdx, .MaxRisePct = maxR,
+                .HoldBars = count - 1 - entryIdx,
                 .EntryTime = rows(entryIdx)("시간").ToString(),
                 .ExitTime = rows(count - 1)("시간").ToString(), .ExitReason = "미청산"})
         End If
 
+        ' 성과 집계
         CalcPerformance(perf)
         Return perf
-    End Function
-
-    ' ── 날짜 추출 ──
-    Private Shared Function ExtractDate(timeStr As String) As String
-        If String.IsNullOrEmpty(timeStr) Then Return ""
-        If timeStr.Length >= 10 Then Return timeStr.Substring(0, 10)
-        If timeStr.Length >= 8 Then Return timeStr.Substring(0, 8)
-        Return ""
     End Function
 
     ' ── 성과 집계 ──
     Private Shared Sub CalcPerformance(perf As StrategyPerformance)
         perf.TotalTrades = perf.TradeDetails.Count
-        If perf.TotalTrades = 0 Then Return
-        perf.WinTrades = perf.TradeDetails.Where(Function(t) t.ReturnPct > 0).Count()
-        perf.LossTrades = perf.TradeDetails.Where(Function(t) t.ReturnPct <= 0).Count()
-        perf.WinRate = perf.WinTrades / CDbl(perf.TotalTrades) * 100
+        perf.WinTrades = perf.TradeDetails.AsEnumerable.Where(Function(t) t.ReturnPct > 0).Count
+        perf.LossTrades = perf.TradeDetails.AsEnumerable.Where(Function(t) t.ReturnPct <= 0).Count
+        perf.WinRate = If(perf.TotalTrades > 0, perf.WinTrades / CDbl(perf.TotalTrades) * 100, 0)
         perf.TotalReturnPct = perf.TradeDetails.Sum(Function(t) t.ReturnPct)
-        perf.AvgReturnPct = perf.TotalReturnPct / perf.TotalTrades
-        perf.AvgHoldBars = perf.TradeDetails.Average(Function(t) CDbl(t.HoldBars))
-
-        ' 10%+ 적중 통계
-        perf.TotalSignals = perf.TotalTrades
-        perf.Rise10Count = perf.TradeDetails.Where(Function(t) t.MaxRisePct >= 10).Count()
-        perf.Rise10Rate = If(perf.TotalSignals > 0, perf.Rise10Count / CDbl(perf.TotalSignals) * 100, 0)
-
-        ' Profit Factor
+        perf.AvgReturnPct = If(perf.TotalTrades > 0, perf.TotalReturnPct / perf.TotalTrades, 0)
+        perf.AvgHoldBars = If(perf.TotalTrades > 0, perf.TradeDetails.Average(Function(t) CDbl(t.HoldBars)), 0)
         Dim tG = perf.TradeDetails.Where(Function(t) t.ReturnPct > 0).Sum(Function(t) t.ReturnPct)
         Dim tL = Math.Abs(perf.TradeDetails.Where(Function(t) t.ReturnPct <= 0).Sum(Function(t) t.ReturnPct))
         perf.ProfitFactor = If(tL > 0, tG / tL, If(tG > 0, 999, 0))
-
-        ' MDD
         Dim cum As Double = 0, pk As Double = 0, dd As Double = 0
         For Each t In perf.TradeDetails
             cum += t.ReturnPct : If cum > pk Then pk = cum
@@ -206,10 +135,13 @@ Public Class StrategyEngine
                                         indicators As Dictionary(Of String, Double()),
                                         idx As Integer,
                                         chartData As DataTable) As Boolean
+
         Dim op = cond.Operator.Trim()
 
         Select Case op.ToUpper()
+
             Case "TURNUP"
+                ' 지표가 하락→상승 전환 (prev2 >= prev1 AND prev1 < current)
                 Dim cur = ResolveValue(cond.Indicator, indicators, idx, chartData)
                 Dim prev1 = ResolveValue(cond.Indicator, indicators, idx - 1, chartData)
                 Dim prev2 = ResolveValue(cond.Indicator, indicators, idx - 2, chartData)
@@ -217,6 +149,7 @@ Public Class StrategyEngine
                 Return prev2 >= prev1 AndAlso cur > prev1
 
             Case "TURNDOWN"
+                ' 지표가 상승→하락 전환 (prev2 <= prev1 AND prev1 > current)
                 Dim cur = ResolveValue(cond.Indicator, indicators, idx, chartData)
                 Dim prev1 = ResolveValue(cond.Indicator, indicators, idx - 1, chartData)
                 Dim prev2 = ResolveValue(cond.Indicator, indicators, idx - 2, chartData)
@@ -224,6 +157,7 @@ Public Class StrategyEngine
                 Return prev2 <= prev1 AndAlso cur < prev1
 
             Case "RISING"
+                ' N봉 연속 상승
                 Dim n = CInt(cond.Value)
                 If n < 1 Then n = 2
                 If idx < n Then Return False
@@ -236,6 +170,7 @@ Public Class StrategyEngine
                 Return True
 
             Case "FALLING"
+                ' N봉 연속 하락
                 Dim n = CInt(cond.Value)
                 If n < 1 Then n = 2
                 If idx < n Then Return False
@@ -248,6 +183,7 @@ Public Class StrategyEngine
                 Return True
 
             Case "CROSSUP"
+                ' left가 right를 상향 돌파
                 Dim leftCur = ResolveValue(cond.Indicator, indicators, idx, chartData)
                 Dim leftPrev = ResolveValue(cond.Indicator, indicators, idx - 1, chartData)
                 Dim rightCur = ResolveRight(cond, indicators, idx, chartData)
@@ -257,6 +193,7 @@ Public Class StrategyEngine
                 Return leftPrev <= rightPrev AndAlso leftCur > rightCur
 
             Case "CROSSDOWN"
+                ' left가 right를 하향 돌파
                 Dim leftCur = ResolveValue(cond.Indicator, indicators, idx, chartData)
                 Dim leftPrev = ResolveValue(cond.Indicator, indicators, idx - 1, chartData)
                 Dim rightCur = ResolveRight(cond, indicators, idx, chartData)
@@ -280,19 +217,23 @@ Public Class StrategyEngine
             Case Else
                 Return False
         End Select
+
         Return False
     End Function
 
-    ' ── 이름에서 값 해석 ──
+    ' ── 이름에서 값 해석 (이전 봉 참조 지원) ──
+    ' "JMA" → 현재 봉 JMA, "JMA(1)" → 1봉 전 JMA, "JMA(2)" → 2봉 전
     Private Shared Function ResolveValue(name As String,
                                           indicators As Dictionary(Of String, Double()),
                                           idx As Integer,
                                           chartData As DataTable) As Double
         If String.IsNullOrEmpty(name) Then Return Double.NaN
 
+        ' 숫자인 경우
         Dim numVal As Double
         If Double.TryParse(name.Trim(), numVal) Then Return numVal
 
+        ' (N) 접미사 파싱
         Dim baseName = name.Trim()
         Dim offset = 0
         If baseName.EndsWith(")") Then
@@ -306,7 +247,7 @@ Public Class StrategyEngine
         End If
 
         Dim actualIdx = idx - offset
-        If actualIdx < 0 OrElse actualIdx >= chartData.Rows.Count Then Return Double.NaN
+        If actualIdx < 0 Then Return Double.NaN
 
         ' 지표 딕셔너리 검색
         Dim key = baseName.ToUpper()
@@ -318,6 +259,7 @@ Public Class StrategyEngine
         Next
 
         ' DataTable 직접 참조
+        If actualIdx >= chartData.Rows.Count Then Return Double.NaN
         Select Case key
             Case "PRICE", "CLOSE", "종가" : Return CDbl(chartData.Rows(actualIdx)("종가"))
             Case "OPEN", "시가" : Return CDbl(chartData.Rows(actualIdx)("시가"))
@@ -330,176 +272,96 @@ Public Class StrategyEngine
         Return Double.NaN
     End Function
 
-    ' ── 우변 해석 ──
+    ' ── 우변 해석 (Target 또는 Value) ──
     Private Shared Function ResolveRight(cond As StrategyCondition,
                                           indicators As Dictionary(Of String, Double()),
                                           idx As Integer,
                                           chartData As DataTable) As Double
         If Not String.IsNullOrEmpty(cond.Target) Then
+            ' Target이 숫자인지 확인
             Dim numVal As Double
             If Double.TryParse(cond.Target.Trim(), numVal) Then Return numVal
+            ' 지표 참조
             Return ResolveValue(cond.Target, indicators, idx, chartData)
         End If
         Return cond.Value
     End Function
 
     ' ── 지표 빌드 ──
-    Private Shared Sub BuildIndicators(chartData As DataTable,
-                                        indicators As Dictionary(Of String, Double()))
-        Dim count = chartData.Rows.Count
-        Dim closes(count - 1) As Double
-        Dim highs(count - 1) As Double, lows(count - 1) As Double
-        Dim opens(count - 1) As Double
-        For i = 0 To count - 1
-            closes(i) = CDbl(chartData.Rows(i)("종가"))
-            highs(i) = CDbl(chartData.Rows(i)("고가"))
-            lows(i) = CDbl(chartData.Rows(i)("저가"))
-            opens(i) = CDbl(chartData.Rows(i)("시가"))
-        Next
+    Private Shared Function BuildIndicators(chartData As DataTable,
+                                            strategy As TradingStrategy) As Dictionary(Of String, Double())
+        Dim n As Integer = chartData.Rows.Count
+        Dim ind As New Dictionary(Of String, Double())
 
-        indicators("Close") = closes
-        indicators("High") = highs
-        indicators("Low") = lows
-        indicators("Open") = opens
-
-        ' ── 이동평균 ──
-        indicators("MA5") = CalcSMA(closes, 5)
-        indicators("MA20") = CalcSMA(closes, 20)
-        indicators("MA60") = CalcSMA(closes, 60)
-        indicators("MA120") = CalcSMA(closes, 120)
-
-        ' ── RSI ──
-        indicators("RSI14") = CalcRSI(closes, 14)
-        indicators("RSI5") = CalcRSI(closes, 5)
-        indicators("RSI50") = CalcRSI(closes, 50)
-
-        ' ── JMA ──
-        indicators("JMA") = CalcJMA(closes, 7, 50, 2)
-
-        ' ── SuperTrend ──
-        Dim stUp As Double() = Nothing, stDn As Double() = Nothing, stDir As Integer() = Nothing
-        CalcSuperTrend(highs, lows, closes, 14, 2.0, stUp, stDn, stDir)
-        Dim stVal(count - 1) As Double, stDirD(count - 1) As Double
-        For i = 0 To count - 1
-            stVal(i) = If(stDir(i) = 1, stUp(i), stDn(i))
-            stDirD(i) = stDir(i)
-        Next
-        indicators("SuperTrend") = stVal
-        indicators("STDir") = stDirD
-
-        ' ── CHG1M, CHG3M (변화율) ──
-        Dim chg1m(count - 1) As Double, chg3m(count - 1) As Double
-        For i = 0 To count - 1
-            chg1m(i) = If(i >= 1 AndAlso closes(i - 1) > 0,
-                          (closes(i) - closes(i - 1)) / closes(i - 1) * 100, 0)
-            chg3m(i) = If(i >= 3 AndAlso closes(i - 3) > 0,
-                          (closes(i) - closes(i - 3)) / closes(i - 3) * 100, 0)
-        Next
-        indicators("CHG1M") = chg1m
-        indicators("CHG3M") = chg3m
-
-        ' ── 시가대비 상승률 ──
-        Dim riseFromOpen(count - 1) As Double
-        Dim dayOpen As Double = opens(0)
-        Dim prevDate As String = ExtractDate(chartData.Rows(0)("시간").ToString())
-        For i = 0 To count - 1
-            Dim curDate = ExtractDate(chartData.Rows(i)("시간").ToString())
-            If curDate <> prevDate Then
-                dayOpen = opens(i)
-                prevDate = curDate
+        ' --- extract OHLCV arrays ---
+        Dim closes(n - 1) As Double
+        Dim highs(n - 1) As Double
+        Dim lows(n - 1) As Double
+        Dim volumes(n - 1) As Double
+        For r As Integer = 0 To n - 1
+            closes(r) = CDblSafe(chartData.Rows(r)("종가"))
+            highs(r) = CDblSafe(chartData.Rows(r)("고가"))
+            lows(r) = CDblSafe(chartData.Rows(r)("저가"))
+            If chartData.Columns.Contains("거래량") Then
+                volumes(r) = CDblSafe(chartData.Rows(r)("거래량"))
             End If
-            riseFromOpen(i) = If(dayOpen > 0, (closes(i) - dayOpen) / dayOpen * 100, 0)
         Next
-        indicators("RISE_FROM_OPEN") = riseFromOpen
 
-        ' ── 이격도 ──
-        Dim ma60 = indicators("MA60")
-        Dim ma120 = indicators("MA120")
-        Dim gap60(count - 1) As Double, gap120(count - 1) As Double
-        For i = 0 To count - 1
-            gap60(i) = If(Not Double.IsNaN(ma60(i)) AndAlso ma60(i) > 0,
-                          (closes(i) - ma60(i)) / ma60(i) * 100, Double.NaN)
-            gap120(i) = If(Not Double.IsNaN(ma120(i)) AndAlso ma120(i) > 0,
-                           (closes(i) - ma120(i)) / ma120(i) * 100, Double.NaN)
+        ' ═══ 핵심: 1분/3분 변화율 (BASE-01의 근거) ═══
+        Dim chg1m(n - 1) As Double
+        Dim chg3m(n - 1) As Double
+        For r As Integer = 0 To n - 1
+            If r >= 1 AndAlso closes(r - 1) > 0 Then
+                chg1m(r) = (closes(r) - closes(r - 1)) / closes(r - 1) * 100
+            End If
+            If r >= 3 AndAlso closes(r - 3) > 0 Then
+                chg3m(r) = (closes(r) - closes(r - 3)) / closes(r - 3) * 100
+            End If
         Next
-        indicators("GAP_MA60") = gap60
-        indicators("GAP_MA120") = gap120
+        ind("CHG1M") = chg1m
+        ind("CHG3M") = chg3m
+        ind("VOLUME") = volumes
 
-        ' ── 틱강도 (원본 + TI_v2 가중) ──
+        ' --- SMA ---
+        ind("MA5") = CalcSMA(closes, 5)
+        ind("SMA5") = ind("MA5")
+        ind("MA20") = CalcSMA(closes, 20)
+        ind("SMA20") = ind("MA20")
+        ind("MA120") = CalcSMA(closes, 120)
+        ind("SMA120") = ind("MA120")
+
+        ' --- RSI ---
+        ind("RSI14") = CalcRSI(closes, 14)
+        ind("RSI5") = CalcRSI(closes, 5)
+        ind("RSI50") = CalcRSI(closes, 50)
+
+        ' --- JMA ---
+        ind("JMA") = CalcJMA(closes, 7, 50, 2)
+
+        ' --- SuperTrend ---
+        ind("SUPERTREND") = CalcSuperTrend(highs, lows, closes, 14, 2.0)
+
+        ' --- Tick intensity ---
         If chartData.Columns.Contains("틱강도") Then
-            Dim ti(count - 1) As Double
-            Dim tiV2(count - 1) As Double
-            For i = 0 To count - 1
-                Dim v = chartData.Rows(i)("틱강도")
-                Dim rawTi As Double = 0
-                If v IsNot Nothing AndAlso Not IsDBNull(v) Then rawTi = CDbl(CInt(v))
-                ti(i) = rawTi
-
-                ' TI_v2: 봉방향 가중 + 캔들형태 가중
-                Dim o = opens(i), h = highs(i), l = lows(i), c = closes(i)
-                Dim dirWeight As Double = If(c > o, 0.8, If(c < o, 0.4, 0.6))
-                Dim bodyRange = h - l
-                Dim candleWeight As Double = 1.0
-                If bodyRange > 0 Then
-                    Dim bodyRatio = Math.Abs(c - o) / bodyRange
-                    Dim upperTail = (h - Math.Max(o, c)) / bodyRange
-                    Dim lowerTail = (Math.Min(o, c) - l) / bodyRange
-                    candleWeight = 1.0 + bodyRatio * 0.2 - upperTail * 0.3 + lowerTail * 0.1
-                    If candleWeight < 0.2 Then candleWeight = 0.2
-                End If
-                tiV2(i) = rawTi * dirWeight * candleWeight
+            Dim tickArr(n - 1) As Double
+            For r As Integer = 0 To n - 1
+                tickArr(r) = CDblSafe(chartData.Rows(r)("틱강도"))
             Next
-            indicators("TickIntensity") = ti
-            indicators("TI_V2") = tiV2
-            indicators("TickMA5") = CalcSMA(tiV2, 5)
-            indicators("TickMA20") = CalcSMA(tiV2, 20)
-
-            ' TI_Cum (당일 누적)
-            Dim tiCum(count - 1) As Double
-            Dim cumSum As Double = 0
-            Dim cumPrevDate = ExtractDate(chartData.Rows(0)("시간").ToString())
-            For i = 0 To count - 1
-                Dim curDt = ExtractDate(chartData.Rows(i)("시간").ToString())
-                If curDt <> cumPrevDate Then cumSum = 0 : cumPrevDate = curDt
-                cumSum += tiV2(i)
-                tiCum(i) = cumSum
-            Next
-            indicators("TI_CUM") = tiCum
-
-            ' TI_Spike (현재 / MA20)
-            Dim tma20 = indicators("TickMA20")
-            Dim tiSpike(count - 1) As Double
-            For i = 0 To count - 1
-                tiSpike(i) = If(Not Double.IsNaN(tma20(i)) AndAlso tma20(i) > 0.1,
-                                tiV2(i) / tma20(i), 0)
-            Next
-            indicators("TI_SPIKE") = tiSpike
+            ind("TICKINTENSITY") = tickArr
+            ind("TICKMA5") = CalcSMA(tickArr, 5)
+            ind("TICKMA20") = CalcSMA(tickArr, 20)
+        Else
+            Dim zeros(n - 1) As Double
+            ind("TICKINTENSITY") = zeros
+            ind("TICKMA5") = zeros
+            ind("TICKMA20") = zeros
         End If
 
-        ' ── 거래량 관련 ──
-        If chartData.Columns.Contains("거래량") Then
-            Dim vol(count - 1) As Double
-            For i = 0 To count - 1
-                Dim v = chartData.Rows(i)("거래량")
-                If v IsNot Nothing AndAlso Not IsDBNull(v) Then vol(i) = CDbl(CLng(v)) Else vol(i) = 0
-            Next
-            indicators("Volume") = vol
-            Dim volMA5 = CalcSMA(vol, 5)
-            indicators("VolMA5") = volMA5
-            Dim volRatio(count - 1) As Double
-            For i = 0 To count - 1
-                volRatio(i) = If(Not Double.IsNaN(volMA5(i)) AndAlso volMA5(i) > 0,
-                                 vol(i) / volMA5(i), 0)
-            Next
-            indicators("VOL_RATIO") = volRatio
-        End If
+        Return ind
+    End Function
 
 
-
-
-    End Sub
-
-    ' ═══════ 지표 계산 함수들 ═══════
+    ' ═══════ 지표 계산 함수들 (기존 동일) ═══════
 
     Private Shared Function CalcSMA(data() As Double, period As Integer) As Double()
         Dim n = data.Length, result(n - 1) As Double, sum As Double = 0
