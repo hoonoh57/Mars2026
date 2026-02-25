@@ -1,0 +1,10 @@
+[Database]
+Server=localhost
+Port=3306
+Database=stock_information
+Uid=root
+Pwd=yourpassword
+CharSet=utf8mb4
+
+[Server32]
+BaseUrl=http://localhost:8082

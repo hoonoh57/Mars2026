@@ -1,0 +1,26 @@
+config.ini
+
+# Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+
+# NuGet
+packages/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# 전략 데이터 (로컬 전용, 필요시 제외)
+# strategies/
+
+# 빌드 결과
+[Dd]ebug/
+[Rr]elease/
